@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  producer:
+    build: .
+    command: python main.py
+    volumes:
+      - ./:/app
+      - ./data:/data
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  consumer:
+    build: .
+    command: rq worker -u redis://redis:6379/0 high
+    volumes:
+      - ./:/app
+      - ./data:/data
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
