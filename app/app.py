@@ -14,6 +14,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 logger = get_logger(__name__)
 
 app = FastAPI()
+
 @app.on_event("startup")
 def startup_redis():
     logger.info("Iniciando aplicación...")
@@ -33,6 +34,7 @@ def startup_redis():
     app.state.redis = redis
     app.state.queue = Queue("heartbeat", connection=redis)
     logger.info("Aplicación iniciada correctamente")
+
 
 @app.on_event("shutdown")
 def shutdown_redis():
