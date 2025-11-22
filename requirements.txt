@@ -1,2 +1,11 @@
 uvicorn 
 fastapi
+rq
+redis
+polars
+pydantic
+python-dotenv
+requests
+pytest
+pytest-asyncio
+httpx
