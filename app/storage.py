@@ -10,6 +10,9 @@ import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import polars as pl
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 DATA_DIR = os.getenv("HEARTBEAT_DATA_DIR", "data")
 
@@ -24,7 +27,7 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def get_file_path(user_id: str, date_str: str) -> str:
+def get_file_path(user_id: str, date_str: str, create_dir: bool = True) -> str:
     """
     Genera la ruta del archivo parquet para un usuario y fecha.
     
@@ -36,7 +39,8 @@ def get_file_path(user_id: str, date_str: str) -> str:
         Ruta completa del archivo: data/YYYY-MM-DD/user_{user_id}.parquet
     """
     dest_dir = os.path.join(DATA_DIR, date_str)
-    ensure_dir(dest_dir)
+    if create_dir:
+        ensure_dir(dest_dir)
     filename = f"user_{user_id}.parquet"
     return os.path.join(dest_dir, filename)
 
@@ -112,11 +116,10 @@ def append_to_parquet(new_record: Dict[str, Any], file_path: str, max_retries: i
                 else:
                     combined_df = new_df
                 
-                # Escribir de forma atómica (dentro del lock)
                 atomic_write_parquet(combined_df, file_path)
-                return  # Éxito, salir del loop
+                return 
             finally:
-                # Liberar el lock y cerrar el archivo
+                # liberar lock y cerrar archivo
                 if lock_file:
                     try:
                         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -145,7 +148,9 @@ def append_to_parquet(new_record: Dict[str, Any], file_path: str, max_retries: i
             
             if attempt == max_retries - 1:
                 # Último intento falló, lanzar excepción
+                logger.error(f"append_to_parquet falló después de {max_retries} intentos - file: {file_path}, error: {e}", exc_info=True)
                 raise RuntimeError(f"Error al escribir en {file_path} después de {max_retries} intentos: {e}") from e
+            logger.warning(f"append_to_parquet reintento {attempt + 1}/{max_retries} - file: {file_path}, error: {e}")
             # Esperar un poco antes de reintentar (exponential backoff)
             time.sleep(0.01 * (2 ** attempt))
 
@@ -169,14 +174,16 @@ def read_user_data(user_id: str, start: datetime, end: datetime) -> pl.DataFrame
     
     while current_date <= end_date:
         date_str = current_date.strftime("%Y-%m-%d")
-        file_path = get_file_path(user_id, date_str)
+        # No crear directorio al consultar, solo verificar si existe
+        file_path = get_file_path(user_id, date_str, create_dir=False)
         
         if os.path.exists(file_path):
             try:
                 df = pl.read_parquet(file_path)
                 dataframes.append(df)
-            except Exception:
+            except Exception as e:
                 # caso archivos corruptos/vacios/o con algun error
+                logger.warning(f"Error al leer archivo parquet - file: {file_path}, error: {e}")
                 pass
         
         current_date += timedelta(days=1)
@@ -208,13 +215,37 @@ def read_user_data(user_id: str, start: datetime, end: datetime) -> pl.DataFrame
     return combined_df
 
 
+def deduplicate_same_device(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Deduplica registros del mismo dispositivo con el mismo timestamp exacto.
+    Si hay múltiples registros del mismo dispositivo en el mismo timestamp,
+    calcula el promedio del heart_rate.
+    
+    Args:
+        df: DataFrame con los datos
+        
+    Returns:
+        DataFrame sin duplicados del mismo dispositivo
+    """
+    if df.is_empty():
+        return df
+    
+    # agrupar por timestamp y device_id y promediar si hay duplicados
+    df = df.group_by("timestamp", "device_id").agg([
+        pl.col("heart_rate").mean().alias("heart_rate"),
+        pl.col("user_id").first().alias("user_id")
+    ])
+    
+    return df
+
+
 def apply_device_priority(df: pl.DataFrame) -> pl.DataFrame:
     """
     Aplica la prioridad de dispositivos: cuando hay múltiples dispositivos
     para el mismo timestamp EXACTO, mantiene solo el de mayor prioridad (menor número).
     
     Args:
-        df: DataFrame con los datos
+        df: DataFrame con los datos (ya deduplicado por dispositivo)
         
     Returns:
         DataFrame con conflictos resueltos por prioridad de timestamp exacto
@@ -257,7 +288,13 @@ def aggregate_by_minute(df: pl.DataFrame, device_id: Optional[str] = None) -> pl
     if df.is_empty():
         return df
     
-    #si hay filtro por device NO aplico prioridad, solo filtro por device_id
+    # Paso 1: Deduplicar registros del mismo dispositivo con el mismo timestamp exacto
+    df = deduplicate_same_device(df)
+    
+    if df.is_empty():
+        return df
+    
+    # Paso 2: Si hay filtro por device, solo filtrar. Si no, aplicar prioridad entre dispositivos
     if device_id:
         df = df.filter(pl.col("device_id") == device_id)
     else:
@@ -267,7 +304,7 @@ def aggregate_by_minute(df: pl.DataFrame, device_id: Optional[str] = None) -> pl
     if df.is_empty():
         return df
     
-    # redondeo al minuto para agregacion
+    # Paso 3: Agregar por minuto (truncar timestamp al minuto y promediar)
     df = df.with_columns(
         pl.col("timestamp").dt.truncate("1m").alias("_timestamp_minute")
     )

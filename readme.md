@@ -13,9 +13,20 @@ We are building a system to monitor the heart rate of different users (each user
 
 1. Cliente → POST /metrics/heart-rate → Producer (FastAPI)
 2. Producer → queue.enqueue("app.tasks.process_heartbeat", ...) → Redis
-3. Consumer → detecta job en cola "high"
-4. Consumer → ejecuta app.tasks.process_heartbeat()
-5. Consumer → append_to_parquet() → escribe archivo
+3. Consumer → detects job in queue
+4. Consumer → excecutes app.tasks.process_heartbeat()
+5. Consumer → append_to_parquet() → writes file
+
+### How to use
+Clone this repo and just execute in terminal
+```bash
+docker-compose up
+```
+You will have the endpoints available on http://localhost:8000/metrics/heart-rate
+
+### Future improvements for prod
+- use SQS instead of redis queue (also include DLQ)
+
 
 Author: Mauricio Molina
 
