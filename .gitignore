@@ -2,3 +2,5 @@ challenge.md
 .env
 venv/
 data/
+DESIGN_DECISIONS.md
+logs/

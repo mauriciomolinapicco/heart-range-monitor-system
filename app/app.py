@@ -31,7 +31,7 @@ def startup_redis():
         logger.error(f"Error al conectar con Redis: {e}")
         raise RuntimeError("No se pudo conectar a Redis en startup") from e
     app.state.redis = redis
-    app.state.queue = Queue("high", connection=redis)
+    app.state.queue = Queue("heartbeat", connection=redis)
     logger.info("Aplicación iniciada correctamente")
 
 @app.on_event("shutdown")

@@ -8,10 +8,11 @@ We are building a system to monitor the heart rate of different users (each user
 
 ### Techical details:
 - redis session and queue stored in app.state -> fastapi global container for shared objects
-- used external stored queue (redis queue) so that it persists the data even if the server fails. ENSURES that all requests that received 200 http response will not be lost
+- used external stored queue (redis queue) so that it persists the data even if the server fails. ENSURES that all requests that received 200 http response will not be lost. Used RQ library for python
 - only uses priority management when timestamp is EXACTLY the same
 
-1. Cliente → POST /metrics/heart-rate → Producer (FastAPI)
+Register a heartbeat
+1. Client → POST /metrics/heart-rate → Producer (FastAPI)
 2. Producer → queue.enqueue("app.tasks.process_heartbeat", ...) → Redis
 3. Consumer → detects job in queue
 4. Consumer → excecutes app.tasks.process_heartbeat()
@@ -22,6 +23,7 @@ Clone this repo and just execute in terminal
 ```bash
 docker-compose up
 ```
+
 You will have the endpoints available on http://localhost:8000/metrics/heart-rate
 
 ### Future improvements for prod

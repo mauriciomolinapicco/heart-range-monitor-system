@@ -21,7 +21,7 @@ services:
 
   consumer:
     build: .
-    command: rq worker -u redis://redis:6379/0 high
+    command: rq worker -u redis://redis:6379/0 heartbeat
     volumes:
       - ./:/app
       - ./data:/data
