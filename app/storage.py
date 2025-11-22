@@ -8,7 +8,7 @@ import fcntl
 import tempfile
 import time
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import polars as pl
 from app.logger import get_logger
 
@@ -62,7 +62,7 @@ def atomic_write_parquet(df: pl.DataFrame, dest_path: str) -> None:
     )
     os.close(tmp_fd)
     try:
-        # Escribir con compresión snappy para mejor rendimiento
+        # escribir con compresión snappy para mejor rendimiento
         df.write_parquet(tmp_path, compression="snappy")
         # Reemplazo atómico (POSIX)
         os.replace(tmp_path, dest_path)
@@ -126,14 +126,12 @@ def append_to_parquet(new_record: Dict[str, Any], file_path: str, max_retries: i
                     except Exception:
                         pass
                     lock_file.close()
-                # Eliminar el archivo de lock después de liberarlo
                 if os.path.exists(lock_file_path):
                     try:
                         os.remove(lock_file_path)
                     except Exception:
-                        pass  # Otro proceso pudo haberlo eliminado
+                        pass  
         except Exception as e:
-            # Limpiar en caso de error
             if lock_file and not lock_file.closed:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -202,14 +200,31 @@ def read_user_data(user_id: str, start: datetime, end: datetime) -> pl.DataFrame
     
     # Convertir timestamp a datetime si es string
     if combined_df["timestamp"].dtype == pl.Utf8:
-        combined_df = combined_df.with_columns(
-            pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%S%z")
-            .or_else(pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ"))
-        )
+        # Intentar parsear con timezone primero, luego sin timezone
+        try:
+            combined_df = combined_df.with_columns(
+                pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%S%z")
+            )
+        except Exception:
+            # Si falla, intentar sin timezone y agregar UTC
+            combined_df = combined_df.with_columns(
+                pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ").dt.replace_time_zone("UTC")
+            )
     
-    # filtro por rango de tiempo (antes filtre por fecha, debido a la forma en la que se organizan los archivos, ahora filtro por timestamp)
+    # Normalizar timezone del timestamp si no tiene (asumir UTC)
+    if combined_df["timestamp"].dtype == pl.Datetime:
+        if combined_df["timestamp"].dtype.time_zone is None:
+            combined_df = combined_df.with_columns(
+                pl.col("timestamp").dt.replace_time_zone("UTC")
+            )
+    
+    # Convertir start y end a UTC si tienen timezone
+    start_utc = start.astimezone(timezone.utc) if start.tzinfo else start
+    end_utc = end.astimezone(timezone.utc) if end.tzinfo else end
+    
+    # filtro por rango de tiempo
     combined_df = combined_df.filter(
-        (pl.col("timestamp") >= start) & (pl.col("timestamp") <= end)
+        (pl.col("timestamp") >= start_utc) & (pl.col("timestamp") <= end_utc)
     )
     
     return combined_df
