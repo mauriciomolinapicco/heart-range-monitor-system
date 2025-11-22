@@ -3,4 +3,9 @@ challenge.md
 venv/
 data/
 DESIGN_DECISIONS.md
-logs/
+
+# Python cache files
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*$py.class
