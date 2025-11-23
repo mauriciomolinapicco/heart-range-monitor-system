@@ -2,7 +2,7 @@
 
 Sistema para monitorear la frecuencia cardiaca de diferentes usuarios (cada usuario puede tener multiples dispositivos).
 
-![System Design](sysdesign.png)
+![System Design](sysdesign.jpg)
 
 ### Desafios
 - Alta tasa de escrituras

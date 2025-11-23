@@ -353,6 +353,8 @@ def query_heart_rate_data(
         pl.col("heart_rate").cast(pl.Int64).alias("heart_rate")
     )
     
+    df = df.sort("timestamp")
+    
     # convierto a lista de diccionarios
     result = df.select(["timestamp", "heart_rate", "device_id"]).to_dicts()
     
