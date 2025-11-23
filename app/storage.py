@@ -1,7 +1,7 @@
 # app/storage.py
 """
-Funciones para el manejo de archivos .parquet
-Operaciones de escritura - locking - gestion de directorios
+funciones para el manejo de archivos .parquet
+operaciones de escritura - locking - gestion de directorios
 """
 import os
 import fcntl
@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta, timezone
 import polars as pl
 from app.logger import get_logger
+from uuid import uuid4
 
 logger = get_logger(__name__)
 
@@ -23,48 +24,28 @@ DEVICE_PRIORITY = {
 
 
 def ensure_dir(path: str) -> None:
-    """Crea el directorio si no existe."""
+    """crea el directorio si no existe."""
     os.makedirs(path, exist_ok=True)
 
 
-def get_file_path(user_id: str, date_str: str, create_dir: bool = True) -> str:
-    """
-    Genera la ruta del archivo parquet para un usuario y fecha.
-    
-    Args:
-        user_id: ID del usuario
-        date_str: Fecha en formato YYYY-MM-DD
-        
-    Returns:
-        Ruta completa del archivo: data/YYYY-MM-DD/user_{user_id}.parquet
-    """
-    dest_dir = os.path.join(DATA_DIR, date_str)
-    if create_dir:
-        ensure_dir(dest_dir)
-    filename = f"user_{user_id}.parquet"
+def get_part_file_path(user_id: str, date_str: str) -> str:
+    dest_dir = os.path.join(DATA_DIR, date_str, f"user-{user_id}")
+    ensure_dir(dest_dir)
+    filename = f"part-{uuid4().hex}.parquet"
     return os.path.join(dest_dir, filename)
 
 
+
 def atomic_write_parquet(df: pl.DataFrame, dest_path: str) -> None:
-    """
-    Escribe un DataFrame a Parquet de forma atómica.
-    
-    Args:
-        df: DataFrame de Polars a escribir
-        dest_path: Ruta destino del archivo
-        
-    Raises:
-        Exception: Si falla la escritura
-    """
+    """escribe parquet de forma atomica usando temp file + replace."""
     tmp_fd, tmp_path = tempfile.mkstemp(
         suffix=".parquet",
         dir=os.path.dirname(dest_path)
     )
     os.close(tmp_fd)
     try:
-        # escribir con compresión snappy para mejor rendimiento
+        # compresion snappy para mejor rendimiento
         df.write_parquet(tmp_path, compression="snappy")
-        # Reemplazo atómico (POSIX)
         os.replace(tmp_path, dest_path)
     except Exception:
         # Limpiar archivo temporal en caso de error
@@ -77,23 +58,8 @@ def atomic_write_parquet(df: pl.DataFrame, dest_path: str) -> None:
 
 
 def append_to_parquet(new_record: Dict[str, Any], file_path: str, max_retries: int = 3) -> None:
-    """
-    Agrega un nuevo registro al archivo Parquet existente de forma segura.
-    Usa file locking para manejar escritura concurrente.
-    Implementa retry en caso de conflictos de escritura.
-    
-    Args:
-        new_record: Diccionario con los datos del nuevo registro
-        file_path: Ruta del archivo Parquet
-        max_retries: Número máximo de intentos en caso de error
-        
-    Raises:
-        RuntimeError: Si falla después de todos los intentos
-    """
-    # Crear DataFrame con el nuevo registro
+    """Append a record to parquet file with file locking and retries."""
     new_df = pl.DataFrame([new_record])
-    
-    # Usar un archivo de lock separado para mayor robustez
     lock_file_path = file_path + ".lock"
     
     for attempt in range(max_retries):
@@ -145,102 +111,132 @@ def append_to_parquet(new_record: Dict[str, Any], file_path: str, max_retries: i
                     pass
             
             if attempt == max_retries - 1:
-                # Último intento falló, lanzar excepción
-                logger.error(f"append_to_parquet falló después de {max_retries} intentos - file: {file_path}, error: {e}", exc_info=True)
-                raise RuntimeError(f"Error al escribir en {file_path} después de {max_retries} intentos: {e}") from e
+                logger.error(f"append_to_parquet fallo despues de {max_retries} intentos - file: {file_path}, error: {e}", exc_info=True)
+                raise RuntimeError(f"error al escribir en {file_path} despues de {max_retries} intentos: {e}") from e
             logger.warning(f"append_to_parquet reintento {attempt + 1}/{max_retries} - file: {file_path}, error: {e}")
-            # Esperar un poco antes de reintentar (exponential backoff)
             time.sleep(0.01 * (2 ** attempt))
 
 
 def read_user_data(user_id: str, start: datetime, end: datetime) -> pl.DataFrame:
     """
-    Lee todos los archivos parquet de un usuario en el rango de fechas especificado.
-    
-    Args:
-        user_id: ID del usuario
-        start: Fecha/hora de inicio (ISO 8601)
-        end: Fecha/hora de fin (ISO 8601)
-        
-    Returns:
-        DataFrame de Polars con todos los registros del usuario en el rango
+    lee compacted.parquet + part-*.parquet para un user/date range.
+    normaliza a esquema canonico: ["timestamp_ms","heart_rate","device_id","user_id"]
+    convierte timestamp_ms -> timestamp (Datetime UTC).
+    retorna DataFrame listo para agregaciones.
     """
+    CANONICAL_COLS = ["timestamp_ms", "heart_rate", "device_id", "user_id"]
     dataframes = []
-    
-    current_date = start.date()
-    end_date = end.date()
-    
-    while current_date <= end_date:
-        date_str = current_date.strftime("%Y-%m-%d")
-        # No crear directorio al consultar, solo verificar si existe
-        file_path = get_file_path(user_id, date_str, create_dir=False)
-        
-        if os.path.exists(file_path):
-            try:
-                df = pl.read_parquet(file_path)
-                dataframes.append(df)
-            except Exception as e:
-                # caso archivos corruptos/vacios/o con algun error
-                logger.warning(f"Error al leer archivo parquet - file: {file_path}, error: {e}")
-                pass
-        
-        current_date += timedelta(days=1)
-    
-    if not dataframes:
-        # retorno df vacio manteniendo schema
-        return pl.DataFrame({
-            "device_id": [],
-            "user_id": [],
-            "timestamp": [],
-            "heart_rate": []
-        })
-    
 
-    combined_df = pl.concat(dataframes) 
-    
-    # Convertir timestamp a datetime si es string
-    if combined_df["timestamp"].dtype == pl.Utf8:
-        # Intentar parsear con timezone primero, luego sin timezone
+    current = start.date()
+    end_date = end.date()
+
+    while current <= end_date:
+        date_str = current.strftime("%Y-%m-%d")
+        folder = os.path.join(DATA_DIR, date_str, f"user-{user_id}")
+
+        if os.path.isdir(folder):
+            # compacted
+            compacted_path = os.path.join(folder, "compacted.parquet")
+            if os.path.exists(compacted_path):
+                try:
+                    dfc = pl.read_parquet(compacted_path)
+                    dataframes.append((compacted_path, dfc))
+                except Exception as e:
+                    logger.warning(f"error leyendo compacted {compacted_path}: {e}")
+
+            # parts
+            try:
+                for fname in os.listdir(folder):
+                    if fname.startswith("part-") and fname.endswith(".parquet"):
+                        path = os.path.join(folder, fname)
+                        try:
+                            dfp = pl.read_parquet(path)
+                            dataframes.append((path, dfp))
+                        except Exception as e:
+                            logger.warning(f"error leyendo part {path}: {e}")
+            except OSError:
+                # el directorio puede desaparecer entre checks; ignorar
+                pass
+
+        current += timedelta(days=1)
+
+    if not dataframes:
+        return pl.DataFrame({
+            "timestamp": [],
+            "device_id": [],
+            "heart_rate": [],
+            "user_id": []
+        })
+
+    normalized = []
+    for path, df in dataframes:
         try:
-            combined_df = combined_df.with_columns(
-                pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%S%z")
-            )
-        except Exception:
-            # Si falla, intentar sin timezone y agregar UTC
-            combined_df = combined_df.with_columns(
-                pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%SZ").dt.replace_time_zone("UTC")
-            )
-    
-    # Normalizar timezone del timestamp si no tiene (asumir UTC)
-    if combined_df["timestamp"].dtype == pl.Datetime:
-        if combined_df["timestamp"].dtype.time_zone is None:
-            combined_df = combined_df.with_columns(
-                pl.col("timestamp").dt.replace_time_zone("UTC")
-            )
-    
-    # Convertir start y end a UTC si tienen timezone
-    start_utc = start.astimezone(timezone.utc) if start.tzinfo else start
-    end_utc = end.astimezone(timezone.utc) if end.tzinfo else end
-    
-    # filtro por rango de tiempo
-    combined_df = combined_df.filter(
-        (pl.col("timestamp") >= start_utc) & (pl.col("timestamp") <= end_utc)
+            # anadir columnas faltantes con nulls y forzar orden canonico
+            for c in CANONICAL_COLS:
+                if c not in df.columns:
+                    df = df.with_columns(pl.lit(None).alias(c))
+            # seleccionar en orden canonico (ignora columnas extra)
+            df = df.select(CANONICAL_COLS)
+
+            # forzar tipos minimos (best-effort)
+            try:
+                df = df.with_columns(pl.col("timestamp_ms").cast(pl.Int64))
+            except Exception:
+                pass
+            try:
+                df = df.with_columns(pl.col("heart_rate").cast(pl.Int64))
+            except Exception:
+                pass
+            try:
+                df = df.with_columns(pl.col("device_id").cast(pl.Utf8))
+                df = df.with_columns(pl.col("user_id").cast(pl.Utf8))
+            except Exception:
+                pass
+
+            normalized.append(df)
+        except Exception as e:
+            logger.warning(f"Skipping {path} during normalization due to: {e}")
+
+    if not normalized:
+        return pl.DataFrame({
+            "timestamp": [],
+            "device_id": [],
+            "heart_rate": [],
+            "user_id": []
+        })
+
+    # concat seguro: todos tienen mismas columnas en mismo orden
+    combined = pl.concat(normalized, how="vertical", rechunk=True)
+
+    # filtrar por rango usando timestamp_ms 
+    from app.util import datetime_to_epoch_ms
+    start_utc = start.astimezone(timezone.utc) if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    end_utc   = end.astimezone(timezone.utc)   if end.tzinfo   else end.replace(tzinfo=timezone.utc)
+    start_ms = datetime_to_epoch_ms(start_utc)
+    end_ms = datetime_to_epoch_ms(end_utc)
+
+    combined = combined.filter(
+        (pl.col("timestamp_ms") >= start_ms) &
+        (pl.col("timestamp_ms") <= end_ms)
     )
-    
-    return combined_df
+
+    # convertir timestamp_ms -> timestamp (Datetime UTC) despues del filtro
+    # timestamp_ms ya esta en milisegundos, NO dividir por 1000
+    combined = combined.with_columns(
+        pl.col("timestamp_ms").cast(pl.Datetime("ms")).dt.replace_time_zone("UTC").alias("timestamp")
+    )
+
+    # eliminar timestamp_ms ya que ahora tenemos timestamp
+    combined = combined.drop("timestamp_ms")
+
+    return combined
 
 
 def deduplicate_same_device(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Deduplica registros del mismo dispositivo con el mismo timestamp exacto.
-    Si hay múltiples registros del mismo dispositivo en el mismo timestamp,
+    deduplica registros del mismo dispositivo con el mismo timestamp exacto.
+    si hay multiples registros del mismo dispositivo en el mismo timestamp,
     calcula el promedio del heart_rate.
-    
-    Args:
-        df: DataFrame con los datos
-        
-    Returns:
-        DataFrame sin duplicados del mismo dispositivo
     """
     if df.is_empty():
         return df
@@ -256,14 +252,8 @@ def deduplicate_same_device(df: pl.DataFrame) -> pl.DataFrame:
 
 def apply_device_priority(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Aplica la prioridad de dispositivos: cuando hay múltiples dispositivos
-    para el mismo timestamp EXACTO, mantiene solo el de mayor prioridad (menor número).
-    
-    Args:
-        df: DataFrame con los datos (ya deduplicado por dispositivo)
-        
-    Returns:
-        DataFrame con conflictos resueltos por prioridad de timestamp exacto
+    aplica la prioridad de dispositivos: cuando hay multiples dispositivos
+    para el mismo timestamp EXACTO, mantiene solo el de mayor prioridad (menor numero).
     """
     if df.is_empty():
         return df
@@ -276,13 +266,13 @@ def apply_device_priority(df: pl.DataFrame) -> pl.DataFrame:
         pl.col("device_id").map_elements(get_priority, return_dtype=pl.Int64).alias("_priority")
     )
     
-    # Ordenar por timestamp y prioridad (menor número de prioridad primero)
+    # ordenar por timestamp y prioridad (menor numero de prioridad primero)
     df = df.sort("timestamp", "_priority") 
     
-    # Agrupar por timestamp EXACTO y mantener solo el de mayor prioridad (menor número)
+    # agrupar por timestamp EXACTO y mantener solo el de mayor prioridad (menor numero)
     df = df.group_by("timestamp").first()
     
-    # Eliminar columna auxiliar de prioridad
+    # eliminar columna auxiliar de prioridad
     df = df.drop("_priority")
     
     return df
@@ -290,26 +280,19 @@ def apply_device_priority(df: pl.DataFrame) -> pl.DataFrame:
 
 def aggregate_by_minute(df: pl.DataFrame, device_id: Optional[str] = None) -> pl.DataFrame:
     """
-    Agrega los datos en buckets de 1 minuto calculando el promedio del heart_rate.
-    Resuelve conflictos por prioridad de dispositivos y luego agrega por minuto.
-    
-    Args:
-        df: DataFrame con los datos
-        device_id: Opcional, filtrar por device_id antes de agregar
-        
-    Returns:
-        DataFrame agregado por minuto con promedio de heart_rate
+    agrega los datos en buckets de 1 minuto calculando el promedio del heart_rate.
+    resuelve conflictos por prioridad de dispositivos y luego agrega por minuto.
     """
     if df.is_empty():
         return df
     
-    # Paso 1: Deduplicar registros del mismo dispositivo con el mismo timestamp exacto
+    # paso 1: deduplicar registros del mismo dispositivo con el mismo timestamp exacto
     df = deduplicate_same_device(df)
     
     if df.is_empty():
         return df
     
-    # Paso 2: Si hay filtro por device, solo filtrar. Si no, aplicar prioridad entre dispositivos
+    # paso 2: si hay filtro por device, solo filtrar. si no, aplicar prioridad entre dispositivos
     if device_id:
         df = df.filter(pl.col("device_id") == device_id)
     else:
@@ -319,12 +302,12 @@ def aggregate_by_minute(df: pl.DataFrame, device_id: Optional[str] = None) -> pl
     if df.is_empty():
         return df
     
-    # Paso 3: Agregar por minuto (truncar timestamp al minuto y promediar)
+    # paso 3: agregar por minuto (truncar timestamp al minuto y promediar)
     df = df.with_columns(
         pl.col("timestamp").dt.truncate("1m").alias("_timestamp_minute")
     )
     
-    # Ordenar antes del group_by para mantener orden (más eficiente que sort después)
+    # ordenar antes del group_by para mantener orden (mas eficiente que sort despues)
     df = df.sort("_timestamp_minute", "device_id")
     
     # agrupar y agregar - maintain_order=True mantiene el orden de los grupos
@@ -346,16 +329,7 @@ def query_heart_rate_data(
     device_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    Consulta los datos de heart rate de un usuario en un rango de tiempo.
-    
-    Args:
-        user_id: ID del usuario
-        start: Fecha/hora de inicio
-        end: Fecha/hora de fin
-        device_id: Opcional, filtrar por device_id
-        
-    Returns:
-        Lista de diccionarios con los datos agregados por minuto
+    consulta los datos de heart rate de un usuario en un rango de tiempo.
     """
     # leer datos
     df = read_user_data(user_id, start, end)
@@ -369,7 +343,7 @@ def query_heart_rate_data(
     if df.is_empty():
         return []
     
-    # Formatear timestamp a ISO 8601
+    # formatear timestamp a ISO 8601
     df = df.with_columns(
         pl.col("timestamp").dt.strftime("%Y-%m-%dT%H:%M:%SZ").alias("timestamp")
     )

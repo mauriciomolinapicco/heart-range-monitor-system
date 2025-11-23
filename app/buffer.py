@@ -7,7 +7,7 @@ from app.logger import get_logger
 logger = get_logger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-BUFFER_KEY = "heartbeat:buffer"  # Key en Redis para el buffer
+BUFFER_KEY = os.getenv("HEARTBEAT_QUEUE_KEY", "heartbeat:queue")  # Key en Redis para la queue (mismo que consumer)
 
 # cache de conexion redis (singleton)
 _redis_client = None

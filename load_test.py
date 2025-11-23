@@ -1,7 +1,6 @@
-#!/usr/bin/env python3
 """
-Load test script para el sistema de heart rate monitoring.
-Envía múltiples requests concurrentes y verifica el rendimiento y la persistencia de datos.
+load test script para el sistema de heart rate monitoring.
+envia multiples requests concurrentes y verifica el rendimiento y la persistencia de datos.
 """
 import requests
 import time
@@ -17,14 +16,14 @@ import polars as pl
 BASE_URL = "http://localhost:8000"
 DATA_DIR = os.getenv("HEARTBEAT_DATA_DIR", "data")
 
-# Configuración del test
+# configuracion del test
 NUM_REQUESTS = 10000
 CONCURRENT_WORKERS = 20
-BATCH_WAIT_TIME = 10  # Segundos para esperar que el batcher procese
+BATCH_WAIT_TIME = 10  # segundos para esperar que el batcher procese
 
 
 def generate_heartbeat() -> Dict:
-    """Genera un payload de heartbeat aleatorio."""
+    """genera un payload de heartbeat aleatorio."""
     user_id = f"user_{random.randint(1, 10)}"
     device_id = random.choice(["device_a", "device_b"])
     timestamp = datetime.utcnow().isoformat() + "Z"
@@ -39,7 +38,7 @@ def generate_heartbeat() -> Dict:
 
 
 def send_request() -> Tuple[bool, float, Dict, str]:
-    """Envía un request y retorna (success, elapsed_time, payload, error)."""
+    """envia un request y retorna (success, elapsed_time, payload, error)."""
     payload = generate_heartbeat()
     start_time = time.time()
     
@@ -61,34 +60,39 @@ def send_request() -> Tuple[bool, float, Dict, str]:
 
 
 def count_records_in_files(user_id: str, date_str: str) -> int:
-    """Cuenta los registros en los archivos parquet para un usuario y fecha."""
-    date_dir = os.path.join(DATA_DIR, date_str)
+    """cuenta los registros en los archivos parquet para un usuario y fecha."""
+    user_dir = os.path.join(DATA_DIR, date_str, f"user-{user_id}")
     
-    if not os.path.exists(date_dir):
-        return 0
-    
-    # Buscar todos los archivos parquet del usuario (principal + fragmentos si existen)
-    pattern = os.path.join(date_dir, f"user_{user_id}*.parquet")
-    files = glob.glob(pattern)
-    
-    if not files:
+    if not os.path.isdir(user_dir):
         return 0
     
     total_count = 0
-    for file_path in files:
+    
+    # leer compacted.parquet si existe
+    compacted_path = os.path.join(user_dir, "compacted.parquet")
+    if os.path.exists(compacted_path):
+        try:
+            df = pl.read_parquet(compacted_path)
+            total_count += len(df)
+        except Exception as e:
+            print(f"⚠️  error leyendo compacted {compacted_path}: {e}")
+    
+    # leer todos los part-*.parquet
+    pattern = os.path.join(user_dir, "part-*.parquet")
+    for file_path in glob.glob(pattern):
         try:
             df = pl.read_parquet(file_path)
             total_count += len(df)
         except Exception as e:
-            print(f"⚠️  Error leyendo {file_path}: {e}")
+            print(f"⚠️  error leyendo part {file_path}: {e}")
     
     return total_count
 
 
 def wait_for_batch_processing(expected_count: int, date_str: str, max_wait: int = 60) -> int:
-    """Espera a que el batcher procese los datos y retorna el conteo final."""
-    print(f"\n⏳ Esperando que el batcher procese los datos (max {max_wait}s)...")
-    print(f"   Esperando {expected_count} registros...")
+    """espera a que el batcher procese los datos y retorna el conteo final."""
+    print(f"\n⏳ esperando que el batcher procese los datos (max {max_wait}s)...")
+    print(f"   esperando {expected_count} registros...")
     
     start_time = time.time()
     last_count = 0
@@ -109,7 +113,7 @@ def wait_for_batch_processing(expected_count: int, date_str: str, max_wait: int 
             last_count = current_count
             
             if current_count >= expected_count * 0.95:
-                print(f"   ✅ Procesamiento completo ({current_count}/{expected_count})")
+                print(f"   ✅ procesamiento completo ({current_count}/{expected_count})")
                 break
         elif elapsed % 10 == 0:
             print(f"   {elapsed}s: {current_count}/{expected_count} registros ({progress:.1f}%) - sin cambios")
@@ -118,31 +122,31 @@ def wait_for_batch_processing(expected_count: int, date_str: str, max_wait: int 
 
 
 def run_load_test():
-    """Ejecuta el test de carga completo."""
+    """ejecuta el test de carga completo."""
     print("=" * 70)
     print("🚀 LOAD TEST - Heart Rate Monitoring System")
     print("=" * 70)
-    print(f"Configuración:")
-    print(f"  - Requests totales: {NUM_REQUESTS}")
-    print(f"  - Workers concurrentes: {CONCURRENT_WORKERS}")
+    print(f"configuracion:")
+    print(f"  - requests totales: {NUM_REQUESTS}")
+    print(f"  - workers concurrentes: {CONCURRENT_WORKERS}")
     print(f"  - URL: {BASE_URL}")
-    print(f"  - Data directory: {DATA_DIR}")
+    print(f"  - data directory: {DATA_DIR}")
     print()
     
-    # Verificar que el servidor esté disponible
+    # verificar que el servidor este disponible
     try:
         response = requests.get(f"{BASE_URL}/health", timeout=5)
         if response.status_code != 200:
-            print(f"❌ Servidor no está saludable: {response.status_code}")
+            print(f"❌ servidor no esta saludable: {response.status_code}")
             return
-        print("✅ Servidor saludable")
+        print("✅ servidor saludable")
     except Exception as e:
-        print(f"❌ No se puede conectar al servidor: {e}")
-        print(f"   Asegúrate de que el servidor esté corriendo (docker-compose up)")
+        print(f"❌ no se puede conectar al servidor: {e}")
+        print(f"   asegurate de que el servidor este corriendo (docker-compose up)")
         return
     
     print("\n" + "=" * 70)
-    print("📤 ENVIANDO REQUESTS...")
+    print("📤 enviando requests...")
     print("=" * 70)
     
     start_time = time.time()
@@ -151,7 +155,7 @@ def run_load_test():
     payloads_sent = []
     
     with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS) as executor:
-        # Enviar todos los requests
+        # enviar todos los requests
         futures = [executor.submit(send_request) for _ in range(NUM_REQUESTS)]
         
         completed = 0
@@ -169,42 +173,42 @@ def run_load_test():
             else:
                 errors.append({"payload": payload, "error": error})
             
-            # Mostrar progreso cada 100 requests
+            # mostrar progreso cada 100 requests
             if len(results) % 100 == 0:
                 success_rate = (completed / len(results)) * 100
-                print(f"   Progreso: {len(results)}/{NUM_REQUESTS} - Success: {success_rate:.1f}%")
+                print(f"   progreso: {len(results)}/{NUM_REQUESTS} - success: {success_rate:.1f}%")
     
     total_time = time.time() - start_time
     
-    # Estadísticas de requests
+    # estadisticas de requests
     successful = [r for r in results if r["success"]]
     failed = [r for r in results if not r["success"]]
     
     print("\n" + "=" * 70)
-    print("📊 RESULTADOS DE REQUESTS")
+    print("📊 resultados de requests")
     print("=" * 70)
-    print(f"Total requests: {len(results)}")
-    print(f"Exitosos: {len(successful)} ({len(successful)/len(results)*100:.1f}%)")
-    print(f"Fallidos: {len(failed)} ({len(failed)/len(results)*100:.1f}%)")
-    print(f"Tiempo total: {total_time:.2f}s")
-    print(f"Throughput: {len(results)/total_time:.1f} req/s")
+    print(f"total requests: {len(results)}")
+    print(f"exitosos: {len(successful)} ({len(successful)/len(results)*100:.1f}%)")
+    print(f"fallidos: {len(failed)} ({len(failed)/len(results)*100:.1f}%)")
+    print(f"tiempo total: {total_time:.2f}s")
+    print(f"throughput: {len(results)/total_time:.1f} req/s")
     
     if successful:
         latencies = [r["elapsed"] for r in successful]
-        print(f"\nLatencia (exitosas):")
-        print(f"  Min: {min(latencies)*1000:.1f}ms")
-        print(f"  Max: {max(latencies)*1000:.1f}ms")
-        print(f"  Promedio: {statistics.mean(latencies)*1000:.1f}ms")
-        print(f"  Mediana: {statistics.median(latencies)*1000:.1f}ms")
+        print(f"\nlatencia (exitosas):")
+        print(f"  min: {min(latencies)*1000:.1f}ms")
+        print(f"  max: {max(latencies)*1000:.1f}ms")
+        print(f"  promedio: {statistics.mean(latencies)*1000:.1f}ms")
+        print(f"  mediana: {statistics.median(latencies)*1000:.1f}ms")
         if len(latencies) > 1:
             sorted_latencies = sorted(latencies)
             p95_idx = int(len(sorted_latencies) * 0.95)
             p99_idx = int(len(sorted_latencies) * 0.99)
-            print(f"  P95: {sorted_latencies[p95_idx]*1000:.1f}ms")
-            print(f"  P99: {sorted_latencies[p99_idx]*1000:.1f}ms")
+            print(f"  p95: {sorted_latencies[p95_idx]*1000:.1f}ms")
+            print(f"  p99: {sorted_latencies[p99_idx]*1000:.1f}ms")
     
     if errors:
-        print(f"\nErrores encontrados ({len(errors)}):")
+        print(f"\nerrores encontrados ({len(errors)}):")
         error_types = {}
         for e in errors:
             error_msg = e["error"] or "Unknown"
@@ -212,16 +216,16 @@ def run_load_test():
         for error, count in error_types.items():
             print(f"  {error}: {count}")
     
-    # Esperar a que el batcher procese los datos
+    # esperar a que el batcher procese los datos
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
     print(f"\n" + "=" * 70)
-    print("💾 VERIFICANDO PERSISTENCIA DE DATOS...")
+    print("💾 verificando persistencia de datos...")
     print("=" * 70)
     
-    time.sleep(BATCH_WAIT_TIME)  # Dar tiempo inicial al batcher
+    time.sleep(BATCH_WAIT_TIME)  # dar tiempo inicial al batcher
     total_written = wait_for_batch_processing(len(successful), date_str, max_wait=120)
     
-    print(f"\nDesglose por usuario:")
+    print(f"\ndesglose por usuario:")
     user_counts = {}
     for user_id in [f"user_{i}" for i in range(1, 11)]:
         count = count_records_in_files(user_id, date_str)
@@ -229,23 +233,23 @@ def run_load_test():
         if count > 0:
             print(f"  {user_id}: {count} registros")
     
-    print(f"\nTotal registros escritos en archivos: {total_written}")
-    print(f"Registros esperados: {len(successful)}")
+    print(f"\ntotal registros escritos en archivos: {total_written}")
+    print(f"registros esperados: {len(successful)}")
     
-    # Resultado final
+    # resultado final
     print("\n" + "=" * 70)
     if total_written >= len(successful) * 0.95:
-        print("✅ TEST EXITOSO")
+        print("✅ test exitoso")
         print(f"   {total_written}/{len(successful)} registros escritos ({total_written/len(successful)*100:.1f}%)")
     elif total_written >= len(successful) * 0.80:
-        print("⚠️  TEST PARCIALMENTE EXITOSO")
+        print("⚠️  test parcialmente exitoso")
         print(f"   {total_written}/{len(successful)} registros escritos ({total_written/len(successful)*100:.1f}%)")
-        print("   Puede que aún se estén procesando. Espera unos minutos y verifica de nuevo.")
+        print("   puede que aun se esten procesando. espera unos minutos y verifica de nuevo.")
     else:
-        print("❌ TEST FALLIDO")
-        print(f"   Solo {total_written}/{len(successful)} registros escritos ({total_written/len(successful)*100:.1f}%)")
-        print(f"   Diferencia: {len(successful) - total_written} registros faltantes")
-        print("   Revisa los logs del consumer para ver si hay errores")
+        print("❌ test fallido")
+        print(f"   solo {total_written}/{len(successful)} registros escritos ({total_written/len(successful)*100:.1f}%)")
+        print(f"   diferencia: {len(successful) - total_written} registros faltantes")
+        print("   revisa los logs del consumer para ver si hay errores")
     print("=" * 70)
 
 
