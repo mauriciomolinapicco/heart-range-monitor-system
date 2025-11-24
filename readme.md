@@ -26,9 +26,18 @@ docker-compose up
 
 You will have the endpoints available on http://localhost:8000/metrics/heart-rate
 
-### Future improvements for prod
-- use SQS instead of redis queue (also include DLQ)
+
+Endpoints:
+- `POST /metrics/heart-rate` - registrar heartbeat
+- `GET /metrics/heart-rate?user_id=X&start=Y&end=Z&device_id=W` - consultar datos
+- `GET /health` - health check
+
+### Mejoras futuras para prod
+- usar SQS en lugar de Redis queue (incluir DLQ)
+- escalar consumer/producer/ horizontalmente
+- agregar metricas y monitoring
+- use S3 for storage of parquet files
+- implementar WATCHDOG
 
 
 Author: Mauricio Molina
-
