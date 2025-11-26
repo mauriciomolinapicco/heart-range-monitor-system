@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
 from redis import Redis
-from rq import Queue
 from app.models import Heartbeat
 from app.storage import query_heart_rate_data
 from app.logger import get_logger
-from datetime import datetime
+from app.buffer import add_record
+from app.util import datetime_to_epoch_ms
+from datetime import datetime, timezone
 from typing import Optional
 import os
 
@@ -14,6 +15,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 logger = get_logger(__name__)
 
 app = FastAPI()
+
 @app.on_event("startup")
 def startup_redis():
     logger.info("Iniciando aplicación...")
@@ -31,8 +33,8 @@ def startup_redis():
         logger.error(f"Error al conectar con Redis: {e}")
         raise RuntimeError("No se pudo conectar a Redis en startup") from e
     app.state.redis = redis
-    app.state.queue = Queue("heartbeat", connection=redis)
     logger.info("Aplicación iniciada correctamente")
+
 
 @app.on_event("shutdown")
 def shutdown_redis():
@@ -43,11 +45,6 @@ def shutdown_redis():
     except Exception as e:
         logger.warning(f"Error al cerrar conexión Redis: {e}")
 
-def get_queue(request: Request):
-    q = getattr(request.app.state, "queue", None)
-    if q is None:
-        raise HTTPException(500, "Redis no inicializado")
-    return q
 
 def get_redis(request: Request) -> Redis:
     """Obtiene la conexión de Redis del estado de la app."""
@@ -118,14 +115,31 @@ async def health_check(redis: Redis = Depends(get_redis)):
 
 #actual endpoints
 @app.post("/metrics/heart-rate")
-async def enqueue_heartbeat(payload: Heartbeat, queue: Queue = Depends(get_queue)):
-    # validacion de rango de heart rate (30-220) si no se cumple se devuelve error 422 por regla del modelo
+async def enqueue_heartbeat(payload: Heartbeat, redis: Redis = Depends(get_redis)):
+    """
+    Endpoint para recibir heartbeats.
+    Agrega directamente a Redis usando RPUSH (sin RQ).
+    """
     try:
-        job = queue.enqueue("app.tasks.process_heartbeat", payload.dict(), job_timeout=600)
-        logger.info(f"Heartbeat enqueued - user_id: {payload.user_id}, device_id: {payload.device_id}, job_id: {job.id}")
+        
+        ts_dt = payload.timestamp  # tipo: datetime
+        ts_ms = datetime_to_epoch_ms(ts_dt)
+
+        # Crear el record
+        record = {
+            "device_id": payload.device_id,
+            "user_id": payload.user_id,
+            "timestamp_ms": ts_ms,
+            "heart_rate": payload.heart_rate
+        }
+        
+        # agregar a la "cola" de redis (buffer)
+        add_record(record)
+        
+        logger.info(f"Heartbeat agregado a Redis - user_id: {payload.user_id}, device_id: {payload.device_id}")
         return {"status": "accepted"}
     except Exception as e:
-        logger.error(f"Error al encolar heartbeat: {e}", exc_info=True)
+        logger.error(f"Error al agregar heartbeat a Redis: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error al procesar la solicitud")
 
 

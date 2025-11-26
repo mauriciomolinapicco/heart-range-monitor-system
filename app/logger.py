@@ -12,7 +12,7 @@ def setup_logging(log_level: Optional[str] = None) -> None:
     
     numeric_level = getattr(logging, log_level, logging.INFO)
     
-    # Formato de log: timestamp - nivel - módulo - mensaje
+    # Formato de log: timestamp - nivel - modulo - mensaje
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     

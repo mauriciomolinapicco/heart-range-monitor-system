@@ -21,11 +21,20 @@ services:
 
   consumer:
     build: .
-    command: rq worker -u redis://redis:6379/0 heartbeat
+    command: python consumer.py
     volumes:
       - ./:/app
       - ./data:/data
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - START_BATCHER=true
     depends_on:
       - redis
+  
+  compacter:
+    build: .
+    command: python compact.py
+    volumes:
+      - ./:/app
+      - ./data:/data
+

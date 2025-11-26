@@ -11,6 +11,7 @@ import polars as pl
 from app.storage import get_part_file_path, atomic_write_parquet
 from app.logger import get_logger, setup_logging
 
+# Inicializar logging
 setup_logging()
 logger = get_logger(__name__)
 
@@ -73,7 +74,8 @@ def flush_batch_to_parts(batch: List[Tuple[bytes, Dict[str, Any]]]):
 
     for (user_id, date_str), records in groups.items():
         try:
-            # normalizar schema: device_id,user_id,timestamp_ms,heart_rate,enqueued_at
+            # normalizar schema explícito por si hay campos extra/incompletos
+            # campos esperados: device_id,user_id,timestamp_ms,heart_rate,enqueued_at
             df = pl.DataFrame(records)
             # rename timestamp_ms -> timestamp_ms si existe; opcional convert
             part_path = get_part_file_path(user_id, date_str)
@@ -91,7 +93,7 @@ def consumer_loop():
     logger.info("Consumer daemon started, listening to queue...")
     while not _should_stop:
         try:
-            # BRPOPLPUSH: mover de queue a processing
+            # BRPOPLPUSH: atomically move item from queue -> processing
             raw = redis.brpoplpush(QUEUE_KEY, PROCESSING_KEY, timeout=BRPOP_TIMEOUT)
             if raw:
                 parsed = decode_item(raw)
