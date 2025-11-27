@@ -15,12 +15,7 @@ from uuid import uuid4
 
 logger = get_logger(__name__)
 
-DATA_DIR = os.getenv("HEARTBEAT_DATA_DIR", "data")
-
-DEVICE_PRIORITY = {
-    "device_a": 1,  # highest - medical grade
-    "device_b": 2,  # consumer wearable
-}
+from app.config import DATA_DIR, DEVICE_PRIORITY, CANONICAL_COLS
 
 
 def ensure_dir(path: str) -> None:
@@ -29,15 +24,36 @@ def ensure_dir(path: str) -> None:
 
 
 def get_part_file_path(user_id: str, date_str: str) -> str:
+    """
+    Genera la ruta completa para un archivo part-*.parquet.
+    
+    Args:
+        user_id: ID del usuario
+        date_str: Fecha en formato YYYY-MM-DD
+        
+    Returns:
+        Ruta completa del archivo part-*.parquet
+    """
     dest_dir = os.path.join(DATA_DIR, date_str, f"user-{user_id}")
     ensure_dir(dest_dir)
     filename = f"part-{uuid4().hex}.parquet"
     return os.path.join(dest_dir, filename)
 
 
-
 def atomic_write_parquet(df: pl.DataFrame, dest_path: str) -> None:
-    """escribe parquet de forma atomica usando temp file + replace."""
+    """
+    Escribe un DataFrame a parquet de forma atómica usando archivo temporal.
+    
+    Usa un archivo temporal y luego lo reemplaza para garantizar atomicidad.
+    Si falla la escritura, limpia el archivo temporal.
+    
+    Args:
+        df: DataFrame de Polars a escribir
+        dest_path: Ruta destino del archivo parquet
+        
+    Raises:
+        Exception: Si falla la escritura del parquet
+    """
     tmp_fd, tmp_path = tempfile.mkstemp(
         suffix=".parquet",
         dir=os.path.dirname(dest_path)
@@ -124,7 +140,6 @@ def read_user_data(user_id: str, start: datetime, end: datetime) -> pl.DataFrame
     convierte timestamp_ms -> timestamp (Datetime UTC).
     retorna DataFrame listo para agregaciones.
     """
-    CANONICAL_COLS = ["timestamp_ms", "heart_rate", "device_id", "user_id"]
     dataframes = []
 
     current = start.date()

@@ -6,11 +6,10 @@ from app.storage import query_heart_rate_data
 from app.logger import get_logger
 from app.buffer import add_record
 from app.util import datetime_to_epoch_ms
+from app.config import REDIS_URL
 from datetime import datetime, timezone
 from typing import Optional
 import os
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 logger = get_logger(__name__)
 

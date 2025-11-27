@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   redis:
     image: redis:7
@@ -21,7 +19,7 @@ services:
 
   consumer:
     build: .
-    command: python consumer.py
+    command: python scripts/consumer.py
     volumes:
       - ./:/app
       - ./data:/data
@@ -33,7 +31,7 @@ services:
   
   compacter:
     build: .
-    command: python compact.py
+    command: python scripts/compact.py
     volumes:
       - ./:/app
       - ./data:/data
